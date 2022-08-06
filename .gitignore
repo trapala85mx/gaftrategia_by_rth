@@ -3,5 +3,6 @@ config.py
 __pycache__/
 ex.py
 gf.ipynb
-bot.py
 .vscode
+binance_socket_manager.ipynb
+sobre_binance_api.py
