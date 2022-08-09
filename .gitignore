@@ -6,3 +6,6 @@ gf.ipynb
 .vscode
 binance_socket_manager.ipynb
 sobre_binance_api.py
+monedas.py
+coin_data.json
+price_stream.py
