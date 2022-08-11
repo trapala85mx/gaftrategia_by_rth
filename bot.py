@@ -10,7 +10,9 @@ import os
 from coin_data import data
 from config import api_key, api_secret, telegram_token
 import requests
+from colorama import init, Fore, Style
 
+init()
 
 def enviar_señal(msg: str):
     """
@@ -149,7 +151,7 @@ def crear_rango(df: pd.DataFrame, delta: float, tipo: str) -> np.arange:
     return rango
 
 
-def get_shock_point(df: pd.DataFrame, rango: np.arange, tipo: str, vuelta: int) -> float:
+def get_shock_point(df: pd.DataFrame, rango: np.arange, tipo: str) -> float:
     """
     Obtiene un ShockPoint o punto de mayor acumulación de ventas o compras de
     un DataFrame
@@ -166,12 +168,13 @@ def get_shock_point(df: pd.DataFrame, rango: np.arange, tipo: str, vuelta: int) 
     # debemos obtener el lado izquierdo para el múltiplo 2 mientras que
     # para ventas y primera vuelta de compras el derecho
     df_ag = df.groupby(pd.cut(df.precio, rango)).sum()
+
     if tipo == 'v':
         sp = df_ag['total_usdt'].idxmax().right
-    elif tipo == 'c' and vuelta == 1:
-        sp = df_ag['total_usdt'].idxmax().right
-    elif tipo == 'c' and vuelta == 2:
+    elif tipo == 'c':
         sp = df_ag['total_usdt'].idxmax().left
+    
+    print('saliendo de get_shock_point')
     return sp
 
 
@@ -187,6 +190,7 @@ async def get_shock_points(ticker: str, ventas: pd.DataFrame, compras: pd.DataFr
     Returns:
         dict: Diccionario con los shock points de compra y venta del DataFrame
     """
+    print('Entrando a get_shock_points {}'.format(ticker))
     sp_v_1 = get_shock_point(ventas, crear_rango(
         ventas, data[ticker]['i1'], 'v'), 'v', 1)
     sp_v_2 = get_shock_point(ventas, crear_rango(
@@ -197,14 +201,16 @@ async def get_shock_points(ticker: str, ventas: pd.DataFrame, compras: pd.DataFr
         compras, data[ticker]['i2'], 'c'), 'c', 2)
     spv = sorted([sp_v_1, sp_v_2])
     spc = sorted([sp_c_1, sp_c_2])
-
+    print('Puntos Venta: {}, Puntos Compra: {}, Symbol: {}'.format(spv, spc, ticker))
+    print('Saliendo de get_shock_points {}'.format(ticker))
+    await asyncio.sleep(5)
     return {
         'ventas': spv,
         'compras': spc
     }
 
 
-async def analizar_shock_points(shock_points: dict, sl=0.7) -> bool:
+async def analizar_shock_points(shock_points: dict, sl=0.2) -> bool:
     flag_venta = False
     flag_compra = False
 
@@ -234,6 +240,7 @@ def get_price(ticker):
 
 
 async def run(ticker, client):
+    print('Entrando a run {}'.format(ticker))
     while True:
         order_book = await get_order_book(client, symbol=ticker)
         # ventas y compras son asíncronas y secuencial a order book
@@ -243,8 +250,10 @@ async def run(ticker, client):
             get_data_from_order_book(order_book, 'asks'),
             get_data_from_order_book(order_book, 'bids')
         )
+
         shock_points = await get_shock_points(ticker, ventas, compras)
         signal_venta, signal_compra = await analizar_shock_points(shock_points)
+
         if signal_venta and signal_compra:
             #print(f'señal de venta y compra en {ticker}\n{shock_points}')
             enviar_señal(
@@ -252,24 +261,26 @@ async def run(ticker, client):
             break
         if signal_venta and not signal_compra:
             #print(f'señal de venta en {ticker}\n{shock_points["ventas"]}')
-            enviar_señal(
-                f'señal de venta en {ticker}\n{shock_points["ventas"]}')
+            #enviar_señal(f'señal de venta en {ticker}\n{shock_points["ventas"]}')
+            print(f'señal de {Fore.RED}VENTA{Style.RESET_ALL} en {ticker}\n{shock_points["ventas"]}')
             break
         if not signal_venta and signal_compra:
             #print(f"señal de compra en {ticker}\n {shock_points['compras']}")
-            enviar_señal(
-                f"señal de compra en {ticker}\n {shock_points['compras']}")
+            #enviar_señal(f"señal de {Fore.GREEN}COMPRA{Style.RESET_ALL} en {ticker}\n {shock_points['compras']}")
+            print(f"señal de {Fore.GREEN}COMPRA{Style.RESET_ALL} en {ticker}\n {shock_points['compras']}")
             break
+        print('saliendo de run {}'.format(ticker))
 
 
 async def main():
+    print('Entrando en main')
     client = await AsyncClient.create()
-    tickers = ["BTCUSDT", "ROSEUSDT", "MANAUSDT",
-               "ADAUSDT", "MATICUSDT", "CRVUSDT", "STORJUSDT"]
+    tickers = ["MANAUSDT"]
     tasks = []
     for t in tickers:
         tasks.append(asyncio.create_task(run(t, client)))
     await asyncio.gather(*tasks)
+    print('Saliendo de main')
     await client.close_connection()
 
 
