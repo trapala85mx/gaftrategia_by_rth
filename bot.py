@@ -1,3 +1,4 @@
+import re
 from signal import signal
 from typing import Awaitable
 from binance.client import Client, AsyncClient
@@ -7,23 +8,39 @@ import math
 import asyncio
 import os
 from coin_data import data
-from config import api_key, api_secret
+from config import api_key, api_secret, telegram_token
+import requests
 
-price_data = {
-    'precio': 0,
-    'error': False
-}
+
+def enviar_señal(msg: str):
+    """
+    Envía señales a Telegram
+
+    Args:
+        msg (str): Mensaje que se envía a telegram
+    """
+    token = telegram_token
+    bot_chatID = "1357832345"
+    base = "https://api.telegram.org/bot"
+    send_url = base + token + '/sendMessage'
+    data = {
+        'chat_id': bot_chatID,
+        'text': msg
+    }
+    response = requests.post(send_url, json=data)
+    return response
 
 
 async def get_order_book(client: AsyncClient, symbol: str) -> dict:
-    """_summary_
+    """
+    Trae el libro de órdenes
 
     Args:
-        client (AsyncClient): _description_
-        ticker (str): _description_
+        client (AsyncClient): Cliente asíncrono de binance
+        ticker (str): símbolo o tickersymbol de la moneda
 
     Returns:
-        A dictionary as shown in BinanceAPI Documentation
+        Un diccionario de acuerdo a la documentación de la API de Binance
         https://binance-docs.github.io/apidocs/futures/en/#order-book
     """
     client = Client(api_key=api_key, api_secret=api_secret)
@@ -32,6 +49,18 @@ async def get_order_book(client: AsyncClient, symbol: str) -> dict:
 
 
 async def get_data_from_order_book(order_book: dict, trx: str) -> pd.DataFrame:
+    """
+    Extrae la información necesaria del libro de órdenes. Compras y Ventas
+
+    Args:
+        order_book (dict): Diccionario proveniente de la función get_order_book
+        trx (str): tipo de transacción que vamos a extraer, ventas o compras o, por su
+                    nombre en inglés, asks o bids, respectivamente
+
+    Returns:
+        pd.DataFrame: DataFrame con los datos, presentados de manera semejante a cómo
+                      muestra Binance su libro de órdenes
+    """
     df = order_book[trx]
     if trx == "bids":
         df = pd.DataFrame(df, columns=['precio', 'total_usdt'])
@@ -43,7 +72,19 @@ async def get_data_from_order_book(order_book: dict, trx: str) -> pd.DataFrame:
     return df
 
 
+@DeprecationWarning
 async def get_ventas_compras(order_book: dict) -> pd.DataFrame:
+    """
+    Función deprecada ya que se sustituyó por la anterior
+    Función que retorna los dataframes de compras y ventas        
+
+    Args:
+        order_book (dict): recibe el diccionario del libro de órdenes
+                           de la función get_order_book
+
+    Returns:
+        pd.DataFrame: Dos DataFrames, uno de ventas y otro de compras
+    """
     ventas = order_book['asks']
     ventas = pd.DataFrame(
         ventas, columns=['precio', 'total_usdt']).sort_index(axis=0, ascending=False)
@@ -57,20 +98,45 @@ async def get_ventas_compras(order_book: dict) -> pd.DataFrame:
 
 
 def get_max_min(df: pd.DataFrame) -> list:
+    """
+    Función que obtiene los valores máximos y mínimos de un dataframe
+
+    Args:
+        df (pd.DataFrame): Recibe un DataFrame, ya sea de compras o ventas
+
+    Returns:
+        list: Una lista que contiene el valor mínimo y máximo del DataFrame
+    """
     max = df['precio'].max()
     min = df['precio'].min()
     return [min, max]
 
 
 def crear_rango(df: pd.DataFrame, delta: float, tipo: str) -> np.arange:
+    """
+    Función que genera los rangos en los que dividiremos el DataFrame
+
+    Args:
+        df (pd.DataFrame): El DataFrame del cual se va a crear el rango
+        delta (float): La diferencia entre un número y otro del rango
+        tipo (str): Indica si va a ser un rango de compra o venta dependiendo
+                    el cual viene del tipo de DataFrame que enviémos
+
+    Raises:
+        ValueError: Debe escribirse "c" o "v" ya sea mayúscula o minúscula
+
+    Returns:
+        np.arange: Un objeto arange de numpy que contiene los valores iniciales
+                   de cada rango de acuerdo a los datos ingresados
+    """
     min, max = get_max_min(df)
 
     try:
-        if tipo == 'c':
+        if tipo.lower() == 'c':
             inicio = (math.floor((min / delta))) * delta
             final = (math.ceil((max / delta))) * delta
             rango = np.arange(inicio, final+delta, delta)
-        elif tipo == 'v':
+        elif tipo.lower() == 'v':
             inicio = (math.floor((min / delta))) * delta
             final = (math.ceil((max / delta))) * delta
             rango = np.arange(inicio, final+delta, delta)
@@ -83,27 +149,55 @@ def crear_rango(df: pd.DataFrame, delta: float, tipo: str) -> np.arange:
     return rango
 
 
-def get_shock_point(df: pd.DataFrame, rango: np.arange, tipo: str) -> list:
+def get_shock_point(df: pd.DataFrame, rango: np.arange, tipo: str, vuelta: int) -> float:
+    """
+    Obtiene un ShockPoint o punto de mayor acumulación de ventas o compras de
+    un DataFrame
+
+    Args:
+        df (pd.DataFrame): El DataFrame del cual se extraerá el punto
+        rango (np.arange): El rango en el cual se va a dividir el DataFrame
+        tipo (str): Indica si es un DataFrame de compra o venta
+
+    Returns:
+        float: Retorna el punto de mayor acumulación del DataFrame agrupado
+    """
+    # Necesitamos saber qué mpultiplo estamos obteniendo porque en compras
+    # debemos obtener el lado izquierdo para el múltiplo 2 mientras que
+    # para ventas y primera vuelta de compras el derecho
     df_ag = df.groupby(pd.cut(df.precio, rango)).sum()
     if tipo == 'v':
         sp = df_ag['total_usdt'].idxmax().right
-    elif tipo == 'c':
+    elif tipo == 'c' and vuelta == 1:
+        sp = df_ag['total_usdt'].idxmax().right
+    elif tipo == 'c' and vuelta == 2:
         sp = df_ag['total_usdt'].idxmax().left
-
     return sp
 
 
 async def get_shock_points(ticker: str, ventas: pd.DataFrame, compras: pd.DataFrame) -> dict:
+    """
+    Función que obtiene los dos shock points de acuerdo a la estrategia del gafas
+
+    Args:
+        ticker (str): ticker symbol de la moneda
+        ventas (pd.DataFrame): DatFrame de venta del que se extrae los Shock Points
+        compras (pd.DataFrame): DataFrame de compra del que se extrae los Shock Points
+
+    Returns:
+        dict: Diccionario con los shock points de compra y venta del DataFrame
+    """
     sp_v_1 = get_shock_point(ventas, crear_rango(
-        ventas, data[ticker]['i1'], 'v'), 'v')
+        ventas, data[ticker]['i1'], 'v'), 'v', 1)
     sp_v_2 = get_shock_point(ventas, crear_rango(
-        ventas, data[ticker]['i2'], 'v'), 'v')
+        ventas, data[ticker]['i2'], 'v'), 'v', 2)
     sp_c_1 = get_shock_point(compras, crear_rango(
-        compras, data[ticker]['i1'], 'c'), 'c')
+        compras, data[ticker]['i1'], 'c'), 'c', 1)
     sp_c_2 = get_shock_point(compras, crear_rango(
-        compras, data[ticker]['i2'], 'c'), 'c')
+        compras, data[ticker]['i2'], 'c'), 'c', 2)
     spv = sorted([sp_v_1, sp_v_2])
     spc = sorted([sp_c_1, sp_c_2])
+
     return {
         'ventas': spv,
         'compras': spc
@@ -125,10 +219,10 @@ async def analizar_shock_points(shock_points: dict, sl=0.7) -> bool:
     pct_sep_2 = (((sp_v_m - sp_c_M) / sp_v_m) * 100)
     pct_sep = round((pct_sep_1+pct_sep_2)/2, 2)
 
-    if (pct_sep/(pct_ventas+sl)) >= 2.5:  # Aquí es pct_sep/(pct_ventas+SL)
+    if (pct_sep/(pct_ventas+sl)) >= 2:  # Aquí es pct_sep/(pct_ventas+SL)
         #print(f'Se puede vender en {ticker}')
         flag_venta = True
-    if (pct_sep/(pct_compras+sl)) >= 2.5:  # Aquí es pct_sep/(pct_compras+SL)
+    if (pct_sep/(pct_compras+sl)) >= 2:  # Aquí es pct_sep/(pct_compras+SL)
         #print(f'Se puede comprar en {ticker}')
         flag_compra = True
 
@@ -151,38 +245,54 @@ async def run(ticker, client):
         )
         shock_points = await get_shock_points(ticker, ventas, compras)
         signal_venta, signal_compra = await analizar_shock_points(shock_points)
-        print('ok')
         if signal_venta and signal_compra:
-            print(f'señal de venta y compra en {ticker}\n{shock_points}')
+            #print(f'señal de venta y compra en {ticker}\n{shock_points}')
+            enviar_señal(
+                f'señal de venta y compra en {ticker}\n{shock_points}')
             break
         if signal_venta and not signal_compra:
-            print(f'señal de venta en {ticker}\n{shock_points["ventas"]}')
+            #print(f'señal de venta en {ticker}\n{shock_points["ventas"]}')
+            enviar_señal(
+                f'señal de venta en {ticker}\n{shock_points["ventas"]}')
             break
         if not signal_venta and signal_compra:
-            print(f"señal de compra en {ticker}\n {shock_points['compras']}")
+            #print(f"señal de compra en {ticker}\n {shock_points['compras']}")
+            enviar_señal(
+                f"señal de compra en {ticker}\n {shock_points['compras']}")
             break
 
 
 async def main():
     client = await AsyncClient.create()
-    tickers = ["BTCUSDT", "ROSEUSDT", "MANAUSDT", "ADAUSDT", "MATICUSDT"]
+    tickers = ["BTCUSDT", "ROSEUSDT", "MANAUSDT",
+               "ADAUSDT", "MATICUSDT", "CRVUSDT", "STORJUSDT"]
     tasks = []
     for t in tickers:
         tasks.append(asyncio.create_task(run(t, client)))
     await asyncio.gather(*tasks)
     await client.close_connection()
 
-'''
-hasta quí tenemos un ciclo infinito que analiza el libro, trae los puntos
-y nos dice si cumple la condición
-
-Cuando cumpla alguna condición, ya sea que se de ambas entradas o solo una.
-Lo que haremos es parar el ciclo, abrir un stream del precio y actualizar
-el diccionario de data con el precio constantemente
-'''
 
 if __name__ == '__main__':
     #symbol = "MATICUSDT"
     asyncio.run(main())
     #loop = asyncio.get_event_loop()
-    # loop.run_until_complete(main('MANAUSDT'))
+    # loop.run_forever()
+
+
+'''
+- Hasa aquí tenemos un bot que escanea la moneda y nos dice el punto
+  de entrada ya sea compra o venta cumpliendo los parámetros inidicados
+
+- Detalles:
+    1 - El bot deja de escanear la moneda cuando cumploe
+
+- Solución
+    1 - Dentro de la función run() y dentro de sus ciclo
+        En vez de hacer break pasará a otra función que crearemos
+        llamada manejar_trade que recibirá el punto de entrada
+        
+        Esta función colocará la entrada o las entradas y estará
+        monitoreando cuando se abra una entrada y, en cuanto se abra
+        colocará las recompras y el SL
+'''
