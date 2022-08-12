@@ -1,4 +1,5 @@
-from binance.client import Client, AsyncClient
+from binance.client import Client
+from binance import AsyncClient, BinanceSocketManager
 import pandas as pd
 import numpy as np
 import math
@@ -222,6 +223,16 @@ async def get_shock_points(ticker: str, ventas: pd.DataFrame, compras: pd.DataFr
 
 
 async def analizar_shock_points(shock_points: dict, sl=0.2) -> bool:
+    """
+    Función que analiza los shock points cumplan con la separación de 1:2
+
+    Args:
+        shock_points (dict): Diccionario Son los puntos de venta y compra que tiene que analizar
+        sl (float, optional): Es un respiro al precio, es un % porcentaje de separación entre el último Shock Point y el Stop Loss. Defaults to 0.2.
+
+    Returns:
+        bool: Lista de booleano que contiene si cumple o no para compras y ventas
+    """    
     flag_venta = False
     flag_compra = False
 
@@ -371,18 +382,21 @@ async def main():
 #    "JASMYUSDT",
 #    "GALUSDT",
 #]
-    client = await AsyncClient.create()
-    #tickers = ["MANAUSDT"]
-    tasks = []
-    for t in tickers:
-        tasks.append(asyncio.create_task(run(t, client)))
-    await asyncio.gather(*tasks)
+    try:
+        client = await AsyncClient.create()
+        #tickers = ["MANAUSDT"]
+        tasks = []
+        for t in tickers:
+            tasks.append(asyncio.create_task(run(t, client)))
+        await asyncio.gather(*tasks)
 
-    await client.close_connection()
+    except asyncio.TimeoutError as ate:
+        print(ate)
+    finally:
+        await client.close_connection()
 
 
 if __name__ == '__main__':
-    #symbol = "MATICUSDT"
     asyncio.run(main())
     #loop = asyncio.get_event_loop()
     # loop.run_forever()
