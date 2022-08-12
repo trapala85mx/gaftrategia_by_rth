@@ -1,6 +1,3 @@
-import re
-from signal import signal
-from typing import Awaitable
 from binance.client import Client, AsyncClient
 import pandas as pd
 import numpy as np
@@ -11,8 +8,12 @@ from coin_data import data
 from config import api_key, api_secret, telegram_token
 import requests
 from colorama import init, Fore, Style
+import json
+from datetime import datetime
+from binance.exceptions import BinanceAPIException
 
 init()
+
 
 def enviar_señal(msg: str):
     """
@@ -45,9 +46,14 @@ async def get_order_book(client: AsyncClient, symbol: str) -> dict:
         Un diccionario de acuerdo a la documentación de la API de Binance
         https://binance-docs.github.io/apidocs/futures/en/#order-book
     """
-    client = Client(api_key=api_key, api_secret=api_secret)
-    order_book = client.futures_order_book(symbol=symbol, limit=1000)
-    return order_book
+    try:
+        client = Client(api_key=api_key, api_secret=api_secret)
+        order_book = client.futures_order_book(symbol=symbol, limit=1000)
+        return order_book
+    except BinanceAPIException as bae:
+        print(bae.response)
+        print(f"Error al traer el libro de la moneda{symbol}")
+        print(bae)
 
 
 async def get_data_from_order_book(order_book: dict, trx: str) -> pd.DataFrame:
@@ -171,10 +177,10 @@ def get_shock_point(df: pd.DataFrame, rango: np.arange, tipo: str) -> float:
 
     if tipo == 'v':
         sp = df_ag['total_usdt'].idxmax().right
+
     elif tipo == 'c':
         sp = df_ag['total_usdt'].idxmax().left
-    
-    print('saliendo de get_shock_point')
+
     return sp
 
 
@@ -190,21 +196,26 @@ async def get_shock_points(ticker: str, ventas: pd.DataFrame, compras: pd.DataFr
     Returns:
         dict: Diccionario con los shock points de compra y venta del DataFrame
     """
-    print('Entrando a get_shock_points {}'.format(ticker))
+
     sp_v_1 = get_shock_point(ventas, crear_rango(
-        ventas, data[ticker]['i1'], 'v'), 'v', 1)
+        ventas, data[ticker]['i1'], 'v'), 'v')
     sp_v_2 = get_shock_point(ventas, crear_rango(
-        ventas, data[ticker]['i2'], 'v'), 'v', 2)
+        ventas, data[ticker]['i2'], 'v'), 'v')
     sp_c_1 = get_shock_point(compras, crear_rango(
-        compras, data[ticker]['i1'], 'c'), 'c', 1)
+        compras, data[ticker]['i1'], 'c'), 'c')
     sp_c_2 = get_shock_point(compras, crear_rango(
-        compras, data[ticker]['i2'], 'c'), 'c', 2)
-    spv = sorted([sp_v_1, sp_v_2])
-    spc = sorted([sp_c_1, sp_c_2])
-    print('Puntos Venta: {}, Puntos Compra: {}, Symbol: {}'.format(spv, spc, ticker))
-    print('Saliendo de get_shock_points {}'.format(ticker))
-    await asyncio.sleep(5)
+        compras, data[ticker]['i2'], 'c'), 'c')
+    spv = [sp_v_1, sp_v_2]
+    spc = [sp_c_1, sp_c_2]
+
+    # print({
+    #    'symbol': ticker,
+    #    'ventas': spv,
+    #    'compras': spc
+    # })
+
     return {
+        'symbol': ticker,
         'ventas': spv,
         'compras': spc
     }
@@ -219,18 +230,19 @@ async def analizar_shock_points(shock_points: dict, sl=0.2) -> bool:
     sp_c_m = shock_points['compras'][0]
     sp_c_M = shock_points['compras'][1]
 
-    pct_ventas = round(((sp_v_M - sp_v_m) / sp_v_m) * 100, 2)
-    pct_compras = round(((sp_c_M - sp_c_m) / sp_c_M) * 100, 2)
-    pct_sep_1 = (((sp_c_M - sp_v_m) / sp_c_M) * -100)
-    pct_sep_2 = (((sp_v_m - sp_c_M) / sp_v_m) * 100)
-    pct_sep = round((pct_sep_1+pct_sep_2)/2, 2)
+    if (sp_v_m != sp_v_M) and (sp_c_m != sp_c_M) and (sp_v_M > sp_v_m) and (sp_c_M > sp_c_m):
+        pct_ventas = round(((sp_v_M - sp_v_m) / sp_v_m) * 100, 2)
+        pct_compras = round(((sp_c_M - sp_c_m) / sp_c_M) * 100, 2)
+        pct_sep_1 = (((sp_c_M - sp_v_m) / sp_c_M) * -100)
+        pct_sep_2 = (((sp_v_m - sp_c_M) / sp_v_m) * 100)
+        pct_sep = round((pct_sep_1+pct_sep_2)/2, 2)
 
-    if (pct_sep/(pct_ventas+sl)) >= 2:  # Aquí es pct_sep/(pct_ventas+SL)
-        #print(f'Se puede vender en {ticker}')
-        flag_venta = True
-    if (pct_sep/(pct_compras+sl)) >= 2:  # Aquí es pct_sep/(pct_compras+SL)
-        #print(f'Se puede comprar en {ticker}')
-        flag_compra = True
+        if (pct_sep/(pct_ventas+sl)) >= 2:  # Aquí es pct_sep/(pct_ventas+SL)
+            #print(f'Se puede vender en {ticker}')
+            flag_venta = True
+        if (pct_sep/(pct_compras+sl)) >= 2:  # Aquí es pct_sep/(pct_compras+SL)
+            #print(f'Se puede comprar en {ticker}')
+            flag_compra = True
 
     return flag_venta, flag_compra
 
@@ -240,47 +252,132 @@ def get_price(ticker):
 
 
 async def run(ticker, client):
-    print('Entrando a run {}'.format(ticker))
     while True:
         order_book = await get_order_book(client, symbol=ticker)
-        # ventas y compras son asíncronas y secuencial a order book
-        # ventas = await get_data_from_order_book(order_book, 'asks')
-        # compras = await get_data_from_order_book(order_book, 'bids')
+
         ventas, compras = await asyncio.gather(
             get_data_from_order_book(order_book, 'asks'),
             get_data_from_order_book(order_book, 'bids')
         )
 
         shock_points = await get_shock_points(ticker, ventas, compras)
+
         signal_venta, signal_compra = await analizar_shock_points(shock_points)
 
         if signal_venta and signal_compra:
-            #print(f'señal de venta y compra en {ticker}\n{shock_points}')
-            enviar_señal(
-                f'señal de venta y compra en {ticker}\n{shock_points}')
+            print(shock_points['symbol'])
+            msg = """
+            ****************************************************
+                 Señal de {}VENTA{} y {}COMPRA{} en {}
+            ****************************************************
+            2.- {} 
+            1.- {}
+            ------------------------------
+            1.- {}
+            2.- {}""".format(Fore.RED, Style.RESET_ALL, Fore.GREEN, Style.RESET_ALL, shock_points['symbol'], shock_points['ventas'][1], shock_points['ventas'][0], shock_points['compras'][1], shock_points['compras'][0])
+            print(msg)
+            # enviar_señal(
+            #    f'señal de venta y compra en {ticker}\n{shock_points}')
             break
         if signal_venta and not signal_compra:
+            print(shock_points['symbol'])
             #print(f'señal de venta en {ticker}\n{shock_points["ventas"]}')
-            #enviar_señal(f'señal de venta en {ticker}\n{shock_points["ventas"]}')
-            print(f'señal de {Fore.RED}VENTA{Style.RESET_ALL} en {ticker}\n{shock_points["ventas"]}')
+            msg = """
+            ****************************************
+                 Señal de {}VENTA{} en {}
+            ****************************************
+            2.- {} 
+            1.- {}
+            ------------------------------
+            1.- {}
+            2.- {}""".format(Fore.RED, Style.RESET_ALL, ticker, shock_points['ventas'][1], shock_points['ventas'][0], shock_points['compras'][1], shock_points['compras'][0])
+            print(msg)
             break
         if not signal_venta and signal_compra:
+            print(shock_points['symbol'])
             #print(f"señal de compra en {ticker}\n {shock_points['compras']}")
-            #enviar_señal(f"señal de {Fore.GREEN}COMPRA{Style.RESET_ALL} en {ticker}\n {shock_points['compras']}")
-            print(f"señal de {Fore.GREEN}COMPRA{Style.RESET_ALL} en {ticker}\n {shock_points['compras']}")
+            msg = """
+            ****************************************
+                 Señal de {}COMPRA{} en {}
+            ****************************************
+            2.- {} 
+            1.- {}
+            ------------------------------
+            1.- {}
+            2.- {}""".format(Fore.GREEN, Style.RESET_ALL, ticker, shock_points['ventas'][1], shock_points['ventas'][0], shock_points['compras'][1], shock_points['compras'][0])
+            print(msg)
             break
-        print('saliendo de run {}'.format(ticker))
 
 
 async def main():
-    print('Entrando en main')
+    # with open("./coin_data.json", "r", encoding='utf-8') as f:
+    #    tickers = json.load(f)
+    tickers = [
+    "ETHUSDT",
+    "EOSUSDT",
+    "XLMUSDT",
+    "XTZUSDT",
+    "BNBUSDT",
+    "ONTUSDT",
+    "QTUMUSDT",
+    "THETAUSDT",
+    "ZILUSDT",
+    "KNCUSDT",
+    "ZRXUSDT",
+    "OMGUSDT",
+    "SXPUSDT",
+    "BANDUSDT",
+    "RLCUSDT",
+    "MKRUSDT",
+    "DEFIUSDT",
+    "BALUSDT",
+    "RUNEUSDT",
+    "SUSHIUSDT",
+    "SRMUSDT",
+    "ICXUSDT",
+    "AVAXUSDT",
+    "ENJUSDT",
+    "TOMOUSDT",
+    "RENUSDT",
+    "AAVEUSDT",
+    "LRCUSDT",
+    "ALPHAUSDT",
+    "GRTUSDT",
+    "1INCHUSDT",
+    "SANDUSDT",
+    "BTSUSDT",
+    "LITUSDT",
+    "REEFUSDT",
+    "RVNUSDT",
+    "SFPUSDT",
+    "CHRUSDT",
+    "MANAUSDT",
+    "ALICEUSDT",
+    "LINAUSDT",
+    "DENTUSDT",
+    "CELRUSDT",
+    "HOTUSDT",
+    "OGNUSDT",
+    "DGBUSDT",
+    "1000SHIBUSDT",
+    "BTCDOMUSDT",
+    "ARUSDT",
+    "KLAYUSDT",
+    "LPTUSDT",
+    "ROSEUSDT",
+    "IMXUSDT",
+    "API3USDT",
+    "WOOUSDT",
+    "JASMYUSDT",
+    "GALUSDT",
+]
     client = await AsyncClient.create()
-    tickers = ["MANAUSDT"]
+    #tickers = ["MANAUSDT"]
     tasks = []
     for t in tickers:
         tasks.append(asyncio.create_task(run(t, client)))
     await asyncio.gather(*tasks)
-    print('Saliendo de main')
+
     await client.close_connection()
 
 
@@ -290,20 +387,64 @@ if __name__ == '__main__':
     #loop = asyncio.get_event_loop()
     # loop.run_forever()
 
-
 '''
-- Hasa aquí tenemos un bot que escanea la moneda y nos dice el punto
-  de entrada ya sea compra o venta cumpliendo los parámetros inidicados
-
-- Detalles:
-    1 - El bot deja de escanear la moneda cuando cumploe
-
-- Solución
-    1 - Dentro de la función run() y dentro de sus ciclo
-        En vez de hacer break pasará a otra función que crearemos
-        llamada manejar_trade que recibirá el punto de entrada
-        
-        Esta función colocará la entrada o las entradas y estará
-        monitoreando cuando se abra una entrada y, en cuanto se abra
-        colocará las recompras y el SL
+[
+    "ETHUSDT",
+    "EOSUSDT",
+    "XLMUSDT",
+    "XTZUSDT",
+    "BNBUSDT",
+    "ONTUSDT",
+    "QTUMUSDT",
+    "THETAUSDT",
+    "ZILUSDT",
+    "KNCUSDT",
+    "ZRXUSDT",
+    "OMGUSDT",
+    "SXPUSDT",
+    "BANDUSDT",
+    "RLCUSDT",
+    "MKRUSDT",
+    "DEFIUSDT",
+    "BALUSDT",
+    "RUNEUSDT",
+    "SUSHIUSDT",
+    "SRMUSDT",
+    "ICXUSDT",
+    "AVAXUSDT",
+    "ENJUSDT",
+    "TOMOUSDT",
+    "RENUSDT",
+    "AAVEUSDT",
+    "LRCUSDT",
+    "ALPHAUSDT",
+    "GRTUSDT",
+    "1INCHUSDT",
+    "SANDUSDT",
+    "BTSUSDT",
+    "LITUSDT",
+    "REEFUSDT",
+    "RVNUSDT",
+    "SFPUSDT",
+    "CHRUSDT",
+    "MANAUSDT",
+    "ALICEUSDT",
+    "LINAUSDT",
+    "DENTUSDT",
+    "CELRUSDT",
+    "HOTUSDT",
+    "OGNUSDT",
+    "DGBUSDT",
+    "1000SHIBUSDT",
+    "BTCDOMUSDT",
+    "ARUSDT",
+    "KLAYUSDT",
+    "LPTUSDT",
+    "ROSEUSDT",
+    "IMXUSDT",
+    "API3USDT",
+    "WOOUSDT",
+    "JASMYUSDT",
+    "GALUSDT",
+]
 '''
