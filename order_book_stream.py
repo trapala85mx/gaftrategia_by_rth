@@ -8,35 +8,45 @@ import time
 import math
 
 from binance import AsyncClient, BinanceSocketManager
+from bot import analizar_shock_points
 from coin_data import data
+from colorama import init, Fore, Style
 
-data_to_work = {
-    'MANAUSDT':{
-        'price': 0.0,
-        'asks': None,
-        'bids': None
-    }
-}
 
-async def price_stream(ticker:str):
-    client = await AsyncClient.create()
-    bsm = BinanceSocketManager(client)
-    price_socket = bsm.individual_symbol_ticker_futures_socket(ticker)
-    
+data_to_work = {}
+# data_to_work = {
+#    'MANAUSDT':{
+#        'price': 0.0,
+#        'asks': None,
+#        'bids': None,
+#        '24_hr_Volumne_USDT' : 0.0
+#    },
+#    'BTCUSDT':{
+#        'price': 0.0,
+#        'asks': None,
+#        'bids': None,
+#        '24_hr_Volumne_USDT' : 0.0
+#    }
+# }
+
+
+async def price_stream(ticker: str):
+    price_socket = f"wss://fstream.binance.com/ws/{ticker.lower()}@miniTicker"
+
     while True:
         try:
-            async with price_socket as ps:
+            async with websockets.connect(price_socket) as ps:
                 while True:
-                    msg = await ps.recv()
+                    msg = json.loads(await ps.recv())
                     asyncio.create_task(manage_data(msg, ticker))
                     #data_to_work['price'] = float(res['data']['c'])
-                    #print(price)
-            
+                    # print(price)
+
         except Exception as e:
             print(e)
-        
-        
+
         await asyncio.sleep(10)
+
 
 def get_snapshot(ticker):
     url = f"https://fapi.binance.com/fapi/v1/depth?symbol={ticker.upper()}&limit=1000"
@@ -130,18 +140,18 @@ def crear_rango(df: pd.DataFrame, delta: float, tipo: str) -> np.arange:
 
 
 def get_shock_point(df: pd.DataFrame, rango: np.arange, tipo: str) -> float:
-    df_ag = df.groupby(pd.cut(df.precio, rango)).sum()
+    df_ag = df.groupby(pd.cut(df.price, rango)).sum()
 
     if tipo == 'v':
-        sp = df_ag['total_usdt'].idxmax().right
+        sp = df_ag['asks_qty'].idxmax().right
 
     elif tipo == 'c':
-        sp = df_ag['total_usdt'].idxmax().left
+        sp = df_ag['bids_qty'].idxmax().left
 
     return sp
 
 
-def get_shock_points(ticker, asks, bids) -> list:
+async def get_shock_points(ticker, asks, bids) -> list:
     sp_v_1 = get_shock_point(asks, crear_rango(
         asks, data[ticker]['i1'], 'v'), 'v')
     sp_v_2 = get_shock_point(asks, crear_rango(
@@ -154,24 +164,104 @@ def get_shock_points(ticker, asks, bids) -> list:
     spv = [sp_v_1, sp_v_2]
     spc = [sp_c_1, sp_c_2]
 
-async def manage_data(msg:dict , ticker:str ,asks = None, bids = None):
-    global data_to_work
-    #print(msg['data']['c'])
-    price = float(msg['data']['c'])
-    if price > 0:
-        data_to_work[ticker]['price'] = price
-    
-    if asks:
-        data_to_work['ticer']['asks'] = asks
-    
-    if bids:
-        data_to_work['ticer']['bids'] = bids
-    
-    print(f"Precio: ${data_to_work[ticker]['price']}")
-    print(f"Asks: \n{data_to_work[ticker]['asks']}")
-    print(f"Bids: \n{data_to_work[ticker]['bids']}")
-    
+    return {
+        'symbol': ticker,
+        'ventas': spv,
+        'compras': spc
+    }
 
+
+async def analizar_shock_points(ticker: str, shock_points: dict, sl=0.2):
+    global data_to_work
+    flag_venta = False
+    flag_compra = False
+
+    sp_v_m = shock_points['ventas'][0]
+    sp_v_M = shock_points['ventas'][1]
+    sp_c_m = shock_points['compras'][0]
+    sp_c_M = shock_points['compras'][1]
+
+    if (sp_v_m != sp_v_M) and (sp_c_m != sp_c_M) and (sp_v_M > sp_v_m) and (sp_c_M > sp_c_m) and (sp_c_m > 0):
+        pct_ventas = round(((sp_v_M - sp_v_m) / sp_v_m) * 100, 2)
+        pct_compras = round(((sp_c_M - sp_c_m) / sp_c_M) * 100, 2)
+        pct_sep_1 = (((sp_c_M - sp_v_m) / sp_c_M) * -100)
+        pct_sep_2 = (((sp_v_m - sp_c_M) / sp_v_m) * 100)
+        pct_sep = round((pct_sep_1+pct_sep_2)/2, 2)
+
+        if (pct_sep/(pct_ventas+sl)) >= 2:
+            flag_venta = True
+        if (pct_sep/(pct_compras+sl)) >= 2:
+            flag_compra = True
+
+    return flag_venta, flag_compra
+
+
+def mostrar_mensaje(ticker: str, senal_venta: bool, senal_compra: bool, shock_points: dict):
+    if senal_venta and senal_compra:
+        print(shock_points['symbol'])
+        msg = """
+            ****************************************************
+                 Señal de {}VENTA{} y {}COMPRA{} en {}
+            ****************************************************
+            2.- {} 
+            1.- {}
+            ------------------------------
+            1.- {}
+            2.- {}""".format(Fore.RED, Style.RESET_ALL, Fore.GREEN, Style.RESET_ALL, shock_points['symbol'], shock_points['ventas'][1], shock_points['ventas'][0], shock_points['compras'][1], shock_points['compras'][0])
+        print(msg)
+        # enviar_señal(
+        #    f'señal de venta y compra en {ticker}\n{shock_points}')
+    if senal_venta and not senal_compra:
+        print(shock_points['symbol'])
+        #print(f'señal de venta en {ticker}\n{shock_points["ventas"]}')
+        msg = """
+            ****************************************
+                 Señal de {}VENTA{} en {}
+            ****************************************
+            2.- {} 
+            1.- {}
+            ------------------------------
+            1.- {}
+            2.- {}""".format(Fore.RED, Style.RESET_ALL, ticker, shock_points['ventas'][1], shock_points['ventas'][0], shock_points['compras'][1], shock_points['compras'][0])
+        print(msg)
+    if not senal_venta and senal_compra:
+        print(shock_points['symbol'])
+        #print(f"señal de compra en {ticker}\n {shock_points['compras']}")
+        msg = """
+            ****************************************
+                 Señal de {}COMPRA{} en {}
+            ****************************************
+            2.- {} 
+            1.- {}
+            ------------------------------
+            1.- {}
+            2.- {}""".format(Fore.GREEN, Style.RESET_ALL, ticker, shock_points['ventas'][1], shock_points['ventas'][0], shock_points['compras'][1], shock_points['compras'][0])
+        print(msg)
+
+
+async def manage_data(msg: dict, ticker: str):
+    #print(f"Entrando a manage data de {ticker}")
+    # print(msg['data']['c'])
+    price = float(msg['c'])
+    vol24hr = float(msg['q'])
+    asks = data_to_work[ticker]['asks']
+    bids = data_to_work[ticker]['bids']
+    data_to_work[ticker]['price'] = price
+    data_to_work[ticker]['24_hr_Volumne_USDT'] = vol24hr
+    
+    try:
+        if len(asks.index) > 0 and len(bids.index) > 0 and price > 0 and vol24hr >= 200_000_000:        
+            shock_points = await get_shock_points(ticker, asks, bids)
+            senal_venta, senal_compra = await analizar_shock_points(ticker, shock_points)
+            
+            mensaje = mostrar_mensaje(
+                ticker, senal_venta, senal_compra, shock_points)
+            if mensaje:
+                print(mensaje)
+
+       
+    except Exception as e:
+        pass
 
 
 async def depth_stream(ticker: str):
@@ -185,61 +275,75 @@ async def depth_stream(ticker: str):
                 while True:
                     res = (json.loads(await ws.recv()))["data"]
                     pu_actual = res["pu"]
-                    #print('inicio ciclo')
 
                     if pu_actual != u_anterior:
-                        # print('Snapshot')
-                        # print(f'{"+"*25}')
                         first_event = 1
                         last_update_id, asks, bids = get_snapshot(ticker)
 
                     else:
 
-                        # print(f'{"+"*25}')
-                        #print("pu = u anterior")
-                        # print(f'{"+"*25}')
                         u = res['u']
                         U = res['U']
 
                         if U <= last_update_id and u >= last_update_id and first_event == 1:
                             first_event += 1
-                            #print('Updating first event')
-                            # print(f'{"+"*25}')
                             new_asks, new_bids = get_new_data_daframe(res)
                             asks, bids = update_order_book(
                                 asks, bids, new_asks, new_bids)
 
                         if not u < last_update_id and first_event > 1:
                             first_event += 1
-                            #print('updating next event')
-                            # print(f'{"+"*25}')
                             new_asks, new_bids = get_new_data_daframe(res)
                             asks, bids = update_order_book(
                                 asks, bids, new_asks, new_bids)
-                            
+
                     data_to_work[ticker]['asks'] = asks
                     data_to_work[ticker]['bids'] = bids
+
                     u_anterior = res['u']
-                    
+
         except Exception as e:
             print(e)
 
         await asyncio.sleep(10)
 
 
-async def main(ticker: str):
-    #global tickers
-    #with open("./coin_data.json", "r", encoding='utf-8') as f:
-    #    tickers = json.load(f)
+async def main(tickers: list):
+    global data_to_work
 
-    tasks = [
-        price_stream(ticker),
-        depth_stream(ticker),
-        ]
+    
+    
+    for t in tickers:
+        data_to_work.update(
+            {
+                t : {
+                    'price': 0.0,
+                    'asks': None,
+                    'bids': None,
+                    '24_hr_Volumne_USDT': 0.0,
+                    'keep_looking': True
+                }
+            }
+        )
+            
+    tasks = []
+    for t in tickers:
+        tasks.append(price_stream(t))
+        tasks.append(depth_stream(t))
+    # tasks = [
+    #    price_stream(ticker),
+    #    depth_stream(ticker),
+    #    ]
 
     await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":
-
-    asyncio.run(main("MANAUSDT"))
+    init()
+    try:
+        with open("./coin_data.json", "r", encoding='utf-8') as f:
+            tickers = json.load(f)
+        
+        asyncio.run(main(tickers))
+    except Exception as e:
+        print(e)

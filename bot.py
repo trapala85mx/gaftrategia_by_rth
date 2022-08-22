@@ -258,9 +258,6 @@ async def analizar_shock_points(shock_points: dict, sl=0.2) -> bool:
     return flag_venta, flag_compra
 
 
-def get_price(ticker):
-    pass
-
 
 async def run(ticker, client):
     while True:
