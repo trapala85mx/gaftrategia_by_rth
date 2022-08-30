@@ -7,11 +7,13 @@ data = {
         "qty_decimal": 0
     },
     "MANAUSDT": {
-        "i1": 0.1,
-        "i2": 0.01,
+        "i1": 0.01,
+        "i2": 0.001,
         "minAmntUsd": 5.31,
         "price_decimal": 4,
-        "qty_decimal": 0
+        "qty_decimal": 0,
+        "sl":0.3,
+        "price_dist": 1
     },
     "ADAUSDT": {
         "i1": 0.01,

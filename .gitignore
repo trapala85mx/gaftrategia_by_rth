@@ -10,3 +10,6 @@ monedas.py
 coin_data.json
 por_moneda.py
 orderBook_stream.py
+ejemplo_threads.py
+parallell_example.py
+request.py
