@@ -13,3 +13,6 @@ orderBook_stream.py
 ejemplo_threads.py
 parallell_example.py
 request.py
+node.py
+list_queue.py
+stack.py

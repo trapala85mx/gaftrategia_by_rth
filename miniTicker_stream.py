@@ -2,38 +2,22 @@ import websockets
 import asyncio
 import json
 
-from websockets.exceptions import ConnectionClosedError
+from binance import BinanceSocketManager, AsyncClient
+from binance.exceptions import BinanceAPIException
 from order_book import OrderBook
-
-
-async def main(symbol:str, order_book: OrderBook):
-    url = f"wss://fstream.binance.com/ws{symbol.lower()}@miniTicker"
+#
+#
+async def main(symbol:str, order_book:OrderBook):
+    client = await AsyncClient.create()
+    bsm = BinanceSocketManager(client)
+    miniTickerSocker = bsm.individual_symbol_ticker_futures_socket(symbol)
     while True:
         try:
-            subscribe = {
-                "method": "SUBSCRIBE",
-                "params": [f"{symbol.lower()}@miniTicker"],
-                "id": 1,
-            }
-
-            
-            async with websockets.connect(url, ping_interval = 300, ping_timeout=900) as websocket:
-                await websocket.send(json.dumps(subscribe))
-            
-                while True:
-                    msg = await websocket.recv()
-                    msg = json.loads(msg)
-                    if "e" in msg:
-                        order_book.price = float(msg['c'])
-                        order_book.vol24Hr = float(msg['q'])
-                        
-        except ConnectionClosedError as cc:
-            print(cc)
-            continue
-
-        except KeyboardInterrupt as ki:
-            print("Cierre por Ctrl+D")
-            websocket.close()
+            async with miniTickerSocker as mts:
+                msg = await mts.recv()
+                order_book.price = float(msg['data']['c'])
+        except BinanceAPIException as bae:
+            print(bae)
 
 if __name__ == '__main__':
-    asyncio.run(main("BTCUSDT"))
+    asyncio.run(main("MANAUSDT"))
