@@ -12,7 +12,6 @@ import pprint
 #
 #
 first_event = 1
-u_anterior = 0
 #
 #
 
@@ -28,10 +27,13 @@ async def orderDataFrame(df: pd.DataFrame, sort_by: str, columns: list) -> pd.Da
 #
 #
 async def get_snapshot(symbol):
+    #print(f"SNAPSHOT DE {symbol}") 
     url = f"https://fapi.binance.com/fapi/v1/depth?symbol={symbol.upper()}&limit=1000"
     try:
         res = requests.get(url)
-
+        #print(f"{'*' * 30}")
+        #print(res.status_code)
+        #print(res.text)
         if res.status_code >= 200 and res.status_code < 300:
             res = json.loads(res.text)
             last_updated_id = res["lastUpdateId"]
@@ -52,7 +54,8 @@ async def get_snapshot(symbol):
             return last_updated_id, asks, bids
 
         else:
-            raise ValueError("No se pudo obtener el snapshot")
+            print(res.status_code)
+            raise ValueError(f"No se pudo obtener el snapshot de {symbol}")
     except ValueError as ve:
         print(ve)
 #
@@ -123,11 +126,11 @@ async def update_order_book(asks, bids, new_asks, new_bids):
     return asks, bids
 #
 #
-async def start_depth_socket(symbol: str, order_book: dict, snap=None):
-    
+async def start_depth_socket(symbol: str, order_book: dict):    
     global first_event, u_anterior
     client = await AsyncClient.create()
     bsm = BinanceSocketManager(client)
+    
     futures_depth_socket = bsm.futures_depth_socket(symbol, depth="")
     
     while True:
@@ -138,35 +141,36 @@ async def start_depth_socket(symbol: str, order_book: dict, snap=None):
                     try:
                         msg = await fds.recv()
                         # print(msg['data']['e'])
-                        pu_actual = msg['data']['pu']
-
-                        if pu_actual != u_anterior:                            
-                            last_updated_id, order_book.asks, order_book.bids = await get_snapshot(symbol)
+                        order_book.pu_actual = msg['data']['pu']
+                        
+                        if order_book.pu_actual != order_book.u_anterior:                                                       
+                            order_book.last_updated_id, order_book.asks, order_book.bids = await get_snapshot(symbol)
 
                         else:
-                            U = msg['data']['U']
-                            u = msg['data']['u']
+                            order_book.U = msg['data']['U']
+                            order_book.u = msg['data']['u']
 
                             new_asks = pd.DataFrame(msg['data']['a'], columns=[
                                                     'price', 'new_asks_qty'])
                             new_bids = pd.DataFrame(msg['data']['b'], columns=[
                                                     'price', 'new_bids_qty'])
                             
-                            if U <= last_updated_id and u >= last_updated_id and first_event == 1:                                
+                            if order_book.U <= order_book.last_updated_id and order_book.u >= order_book.last_updated_id and first_event == 1:                                
                                 first_event += 1                                
                                 order_book.asks, order_book.bids = await update_order_book(order_book.asks, order_book.bids, new_asks, new_bids)
                                 await get_shock_points(order_book)
 
-                            if not u < last_updated_id and first_event > 1:
+                            if not order_book.u < order_book.last_updated_id and first_event > 1:
                                 first_event += 1
                                 order_book.asks, order_book.bids = await update_order_book(order_book.asks, order_book.bids, new_asks, new_bids)
                                 order_book.asks, order_book.bids = await update_order_book(order_book.asks, order_book.bids, new_asks, new_bids)
                                 await get_shock_points(order_book)
                         
-                        u_anterior = msg['data']['u']
+                        order_book.u_anterior = msg['data']['u']
 
                     except BinanceAPIException as bae:
                         print("No se pudo leer el libto de órdenes de ", symbol)
+                        print(bae)
 
         except BinanceAPIException as bae:
             first_event = 1

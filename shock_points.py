@@ -70,6 +70,7 @@ async def get_shock_points(order_book: OrderBook):
     ]
 
     order_book.sp_v_m1, order_book.sp_v_m2, order_book.sp_c_m1, order_book.sp_c_m2 = await asyncio.gather(*tasks)
-
-    print(order_book.sp_c_m1)
-    print(order_book.sp_c_m2)
+    
+    #print(order_book.symbol)
+    #print(order_book.sp_c_m1)
+    #print(order_book.sp_c_m2)

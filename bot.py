@@ -35,10 +35,11 @@ async def main():
     global symbols_accepted, order_books
 
     await get_symbols()
-    # print(symbols_accepted)
+    print(symbols_accepted)
 
     tasks = []
-    symbols_accepted = set(["MANAUSDT"])
+    #symbols_accepted = ["MANAUSDT"]
+
     for t in symbols_accepted:
         order_books[t] = OrderBook(t)
         tasks.append(start_depth_socket(t, order_books[t])),
